@@ -5,14 +5,14 @@ export const dynamic = "force-dynamic";
 
 /** Lightweight polling endpoint for the investigator detail map. */
 export async function GET(_req: Request, { params }: { params: { id: string } }) {
-  const row = getRequestRow(params.id);
+  const row = await getRequestRow(params.id);
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  const view = toRequestView(row);
+  const view = await toRequestView(row);
   return NextResponse.json({
     status: view.status,
     isExpired: view.isExpired,
     locationCount: view.locationCount,
-    records: listRecords(row.id).map((r) => ({
+    records: (await listRecords(row.id)).map((r) => ({
       id: r.id,
       ts: r.ts,
       receivedAt: r.received_at,

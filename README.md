@@ -19,7 +19,7 @@ government/telecom integrations with no public API and are **not** included.
 | Recipient page | `/l/[token]` | Official-style consent UI (agency letterhead, case + officer + verification reference, plain-language explanation), real W3C geolocation, optional live sharing |
 | Audit log | `/audit` | Append-only record of every sensitive action |
 
-Storage: SQLite (`data/investigatex.db`, via Node's built-in `node:sqlite` — no native build).
+Storage: libSQL — a hosted [Turso](https://turso.tech) database in production (`TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`), or a local `data/investigatex.db` file for dev when those vars are unset. See `.env.example`.
 Maps: MapLibre GL + OpenStreetMap tiles (no API key). Phone normalization: `libphonenumber-js`.
 
 ## Run
@@ -117,7 +117,7 @@ src/
       l/[token]/...             recipient: get request info, post location
       audit/route.ts
   lib/
-    db.ts                       node:sqlite connection + schema + typed helpers
+    db.ts                       libSQL/Turso connection + schema + async typed helpers
     requests.ts                 core logic (create, status, expiry, record fix)
     tokens.ts  audit.ts  ratelimit.ts  phone.ts  baseUrl.ts  types.ts
   components/

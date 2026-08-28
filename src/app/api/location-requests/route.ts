@@ -6,7 +6,7 @@ import { shortReference } from "@/lib/tokens";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json({ requests: listRequests() });
+  return NextResponse.json({ requests: await listRequests() });
 }
 
 export async function POST(req: Request) {
@@ -29,7 +29,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const { id, token } = createRequest({
+    const { id, token } = await createRequest({
       caseId,
       targetPhone,
       purpose,

@@ -23,14 +23,14 @@ interface WriteAuditInput {
 }
 
 /** Append-only. There is deliberately no update/delete path for audit_logs. */
-export function writeAudit({
+export async function writeAudit({
   action,
   actor = "investigator",
   caseId = null,
   target = null,
   detail,
-}: WriteAuditInput): void {
-  run(
+}: WriteAuditInput): Promise<void> {
+  await run(
     `INSERT INTO audit_logs (id, ts, actor, case_id, action, target, detail_json)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     newId("aud"),
@@ -43,6 +43,6 @@ export function writeAudit({
   );
 }
 
-export function listAudit(limit = 200): AuditRow[] {
+export function listAudit(limit = 200): Promise<AuditRow[]> {
   return queryAll<AuditRow>(`SELECT * FROM audit_logs ORDER BY ts DESC LIMIT ?`, limit);
 }

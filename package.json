@@ -10,6 +10,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@libsql/client": "^0.14.0",
     "libphonenumber-js": "^1.11.11",
     "maplibre-gl": "^4.7.1",
     "next": "^14.2.35",

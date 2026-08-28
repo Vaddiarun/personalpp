@@ -13,8 +13,8 @@ const ACTION_STYLE: Record<string, string> = {
   NAVIGATE: "text-violet-300",
 };
 
-export default function AuditPage() {
-  const events = listAudit(500);
+export default async function AuditPage() {
+  const events = await listAudit(500);
 
   return (
     <div className="space-y-6">

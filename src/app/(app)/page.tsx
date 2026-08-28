@@ -8,9 +8,8 @@ function fmt(iso: string) {
   return new Date(iso).toLocaleString();
 }
 
-export default function Dashboard() {
-  const stats = dashboardStats();
-  const requests = listRequests(15);
+export default async function Dashboard() {
+  const [stats, requests] = await Promise.all([dashboardStats(), listRequests(15)]);
 
   const cards = [
     { label: "Active Requests", value: stats.active },

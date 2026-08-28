@@ -25,9 +25,9 @@ export async function POST(req: Request, { params }: { params: { token: string }
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
-  const rowRaw = getRequestRowByToken(params.token);
+  const rowRaw = await getRequestRowByToken(params.token);
   if (!rowRaw) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  const row = refreshExpiry(rowRaw);
+  const row = await refreshExpiry(rowRaw);
 
   let body: Body;
   try {
@@ -38,13 +38,13 @@ export async function POST(req: Request, { params }: { params: { token: string }
 
   // Recipient explicitly declined, or the browser denied permission.
   if (body.permission === "denied") {
-    setStatus(row, "DENIED");
-    writeAudit({ action: "PERMISSION_DENIED", caseId: row.case_id, target: row.id });
+    await setStatus(row, "DENIED");
+    await writeAudit({ action: "PERMISSION_DENIED", caseId: row.case_id, target: row.id });
     return NextResponse.json({ ok: true, recorded: false });
   }
 
   // Acceptance-criterion: expired / used requests stop accepting new data.
-  if (!acceptsData(row)) {
+  if (!(await acceptsData(row))) {
     const expired = row.status === "EXPIRED" || Date.now() > new Date(row.expires_at).getTime();
     return NextResponse.json(
       { error: expired ? "This request has expired." : "This request has already been used." },
@@ -62,10 +62,10 @@ export async function POST(req: Request, { params }: { params: { token: string }
 
   // First successful fix implies permission was granted.
   if (row.status === "OPENED" || row.status === "PENDING") {
-    writeAudit({ action: "PERMISSION_GRANTED", caseId: row.case_id, target: row.id });
+    await writeAudit({ action: "PERMISSION_GRANTED", caseId: row.case_id, target: row.id });
   }
 
-  const rec = recordFix(row, { latitude: lat, longitude: lng, accuracy, timestamp });
+  const rec = await recordFix(row, { latitude: lat, longitude: lng, accuracy, timestamp });
 
   return NextResponse.json({
     ok: true,

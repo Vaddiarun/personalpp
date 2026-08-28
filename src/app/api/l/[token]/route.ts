@@ -22,7 +22,7 @@ export async function GET(req: Request, { params }: { params: { token: string } 
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
-  const row = getRequestRowByToken(params.token);
+  const row = await getRequestRowByToken(params.token);
   if (!row) {
     // Do not leak whether a token ever existed.
     return NextResponse.json(NOT_FOUND, { status: 404 });
@@ -30,9 +30,9 @@ export async function GET(req: Request, { params }: { params: { token: string } 
 
   // First open moves PENDING → OPENED and logs it.
   if (row.status === "PENDING") {
-    setStatus(row, "OPENED");
-    writeAudit({ action: "LINK_OPENED", caseId: row.case_id, target: row.id });
+    await setStatus(row, "OPENED");
+    await writeAudit({ action: "LINK_OPENED", caseId: row.case_id, target: row.id });
   }
 
-  return NextResponse.json(toRecipientView(row));
+  return NextResponse.json(await toRecipientView(row));
 }

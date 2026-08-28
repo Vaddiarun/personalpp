@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 /** Logged when the investigator opens external navigation to a reported point. */
 export async function POST(req: Request, { params }: { params: { id: string } }) {
-  const row = getRequestRow(params.id);
+  const row = await getRequestRow(params.id);
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   let detail: Record<string, unknown> = {};
@@ -16,7 +16,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     /* body optional */
   }
 
-  writeAudit({
+  await writeAudit({
     action: "NAVIGATE",
     caseId: row.case_id,
     target: row.id,

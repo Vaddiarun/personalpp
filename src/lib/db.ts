@@ -1,40 +1,26 @@
-import { createClient, type Client, type InArgs } from "@libsql/client";
 import { mkdirSync } from "node:fs";
+import { createClient as createWebClient } from "@libsql/client/web";
 
 /**
- * libSQL / Turso connection. In production set TURSO_DATABASE_URL (+ TURSO_AUTH_TOKEN)
- * so the app talks to a hosted database — Vercel's filesystem is read-only, so a
- * local SQLite file cannot be used there. With no env vars we fall back to a
- * file-backed libSQL database for local development.
+ * Database access for InvestigateX.
  *
- * Everything is async: `@libsql/client` has no synchronous API.
+ *  - PRODUCTION / any serverless host (Vercel, Lambda, Netlify): a hosted libSQL
+ *    database is REQUIRED — set TURSO_DATABASE_URL (+ TURSO_AUTH_TOKEN). We use
+ *    `@libsql/client/web`, which is pure JavaScript (no native addon to install
+ *    for the deploy platform).
+ *  - LOCAL DEV with those vars unset: falls back to a file on disk via Node's
+ *    built-in `node:sqlite` (Node 22.5+). Never used on a read-only filesystem.
+ *
+ * Everything is async so both back-ends share one interface.
  */
-const globalForDb = globalThis as unknown as {
-  __investigatexDb?: Client;
-  __investigatexReady?: Promise<void>;
-};
 
-function createDbClient(): Client {
-  const url = process.env.TURSO_DATABASE_URL?.trim();
-  const authToken = process.env.TURSO_AUTH_TOKEN?.trim();
+type Param = string | number | bigint | boolean | null | Uint8Array;
+type Row = Record<string, unknown>;
 
-  if (url) {
-    return createClient(authToken ? { url, authToken } : { url });
-  }
-
-  // Local dev fallback — a file on disk. Never reached on Vercel (env var is set there).
-  const file = process.env.INVESTIGATEX_DB || "./data/investigatex.db";
-  try {
-    mkdirSync("./data", { recursive: true });
-  } catch {
-    /* directory already exists / not writable — libSQL will surface a clearer error */
-  }
-  return createClient({ url: file.startsWith("file:") ? file : `file:${file}` });
-}
-
-function client(): Client {
-  if (!globalForDb.__investigatexDb) globalForDb.__investigatexDb = createDbClient();
-  return globalForDb.__investigatexDb;
+interface Adapter {
+  all(sql: string, args: Param[]): Promise<Row[]>;
+  exec(sql: string, args: Param[]): Promise<void>;
+  bootstrap(): Promise<void>;
 }
 
 const SCHEMA: string[] = [
@@ -86,58 +72,132 @@ const SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts)`,
 ];
 
-async function bootstrap(db: Client): Promise<void> {
-  await db.batch(SCHEMA, "write");
-
-  // Lightweight column migration for databases created by earlier versions.
+async function runMigrations(a: Adapter): Promise<void> {
+  // Add columns introduced after a database was first created by an older version.
   try {
-    const info = await db.execute(`PRAGMA table_info(location_requests)`);
-    const hasOfficer = info.rows.some((r) => (r as Record<string, unknown>).name === "officer_name");
-    if (!hasOfficer) {
-      await db.execute(`ALTER TABLE location_requests ADD COLUMN officer_name TEXT`);
+    const cols = await a.all(`PRAGMA table_info(location_requests)`, []);
+    if (!cols.some((c) => c.name === "officer_name")) {
+      await a.exec(`ALTER TABLE location_requests ADD COLUMN officer_name TEXT`, []);
     }
   } catch {
     /* PRAGMA unsupported or column already present — safe to ignore */
   }
 }
 
-/** Runs schema bootstrap exactly once per process. */
-function ensureReady(): Promise<void> {
-  if (!globalForDb.__investigatexReady) {
-    globalForDb.__investigatexReady = bootstrap(client()).catch((err) => {
-      // Allow a later request to retry rather than caching a rejected promise.
-      globalForDb.__investigatexReady = undefined;
-      throw err;
-    });
+/** Hosted libSQL / Turso over HTTP — pure JS, works on any serverless platform. */
+function remoteAdapter(rawUrl: string, authToken?: string): Adapter {
+  const url = rawUrl.replace(/^libsql:\/\//i, "https://");
+  const client = createWebClient(authToken ? { url, authToken } : { url });
+  const adapter: Adapter = {
+    async all(sql, args) {
+      const rs = await client.execute({ sql, args });
+      return rs.rows.map((row) => {
+        const obj: Row = {};
+        rs.columns.forEach((c, i) => {
+          obj[c] = (row as unknown as unknown[])[i];
+        });
+        return obj;
+      });
+    },
+    async exec(sql, args) {
+      await client.execute({ sql, args });
+    },
+    async bootstrap() {
+      await client.batch(SCHEMA, "write");
+      await runMigrations(adapter);
+    },
+  };
+  return adapter;
+}
+
+/** Local development only: a file on disk via Node's built-in synchronous SQLite. */
+async function localAdapter(): Promise<Adapter> {
+  const { DatabaseSync } = (await import("node:sqlite")) as typeof import("node:sqlite");
+  const file = process.env.INVESTIGATEX_DB || "./data/investigatex.db";
+  try {
+    mkdirSync("./data", { recursive: true });
+  } catch {
+    /* already exists */
   }
-  return globalForDb.__investigatexReady;
+  const db = new DatabaseSync(file.replace(/^file:/, ""));
+  db.exec("PRAGMA journal_mode = WAL;");
+  db.exec("PRAGMA busy_timeout = 5000;");
+  db.exec("PRAGMA foreign_keys = ON;");
+  const adapter: Adapter = {
+    async all(sql, args) {
+      return db.prepare(sql).all(...(args as never[])) as Row[];
+    },
+    async exec(sql, args) {
+      db.prepare(sql).run(...(args as never[]));
+    },
+    async bootstrap() {
+      for (const stmt of SCHEMA) db.exec(stmt);
+      await runMigrations(adapter);
+    },
+  };
+  return adapter;
 }
 
-type Param = string | number | bigint | boolean | null | Uint8Array;
+function selectAdapter(): Promise<Adapter> {
+  const url = process.env.TURSO_DATABASE_URL?.trim();
+  const authToken = process.env.TURSO_AUTH_TOKEN?.trim();
 
-function toObjects<T>(columns: string[], rows: unknown[][]): T[] {
-  return rows.map((row) => {
-    const obj: Record<string, unknown> = {};
-    columns.forEach((c, i) => {
-      obj[c] = (row as unknown[])[i];
-    });
-    return obj as T;
-  });
+  if (url) {
+    if (/^libsql:\/\//i.test(url) && !authToken) {
+      return Promise.reject(
+        new Error(
+          "TURSO_DATABASE_URL is a libsql:// URL but TURSO_AUTH_TOKEN is missing. " +
+            "Add both env vars in the Vercel project settings and redeploy.",
+        ),
+      );
+    }
+    return Promise.resolve(remoteAdapter(url, authToken));
+  }
+
+  const onServerless =
+    !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME || !!process.env.NETLIFY;
+  if (onServerless) {
+    return Promise.reject(
+      new Error(
+        "No database configured. This deployment has a read-only filesystem and needs a hosted " +
+          "libSQL database: set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in the project's " +
+          "Environment Variables and redeploy. See .env.example.",
+      ),
+    );
+  }
+
+  return localAdapter();
 }
 
-/** Typed helpers around @libsql/client (its row type does not overlap our interfaces). */
+const g = globalThis as unknown as { __ixReady?: Promise<Adapter> };
+
+/** Resolves to a bootstrapped adapter; retried on the next call if it fails. */
+function ready(): Promise<Adapter> {
+  if (!g.__ixReady) {
+    g.__ixReady = selectAdapter()
+      .then(async (a) => {
+        await a.bootstrap();
+        return a;
+      })
+      .catch((err) => {
+        g.__ixReady = undefined; // don't cache a rejection
+        throw err;
+      });
+  }
+  return g.__ixReady;
+}
+
+/** Typed helpers. `T` is one of the *Row interfaces in ./types. */
 export async function queryAll<T>(sql: string, ...params: Param[]): Promise<T[]> {
-  await ensureReady();
-  const rs = await client().execute({ sql, args: params as InArgs });
-  return toObjects<T>(rs.columns as string[], rs.rows as unknown as unknown[][]);
+  const a = await ready();
+  return (await a.all(sql, params)) as unknown as T[];
 }
 
 export async function queryOne<T>(sql: string, ...params: Param[]): Promise<T | undefined> {
-  const rows = await queryAll<T>(sql, ...params);
-  return rows[0];
+  return (await queryAll<T>(sql, ...params))[0];
 }
 
 export async function run(sql: string, ...params: Param[]): Promise<void> {
-  await ensureReady();
-  await client().execute({ sql, args: params as InArgs });
+  const a = await ready();
+  await a.exec(sql, params);
 }
